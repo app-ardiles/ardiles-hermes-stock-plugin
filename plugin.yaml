@@ -1,0 +1,16 @@
+name: ardiles-stock
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: Ardiles Stock AI tools for reading published stock data through the Ardiles Stock API.
+
+provides_tools:
+  - search_stock_item
+
+config_schema:
+  api_url:
+    type: str
+    label: Stock API URL
+    description: Production URL of the Ardiles Stock Read API, without query parameters.
+    default: ""
+    required: true
