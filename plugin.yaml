@@ -1,5 +1,5 @@
 name: ardiles-stock
-version: 1.0.0
+version: 2.0.0
 manifest_version: 2
 api_version: 1
 description: Ardiles Stock Expertise tools for Sekar. Reads published stock data through the Ardiles AI Platform API.
@@ -12,6 +12,12 @@ provides_tools:
   - get_stock_by_accsys
   - get_location_summary
   - get_stock_data_status
+  - stock_query
+  - stock_summary
+  - stock_valuation
+  - stock_rank
+  - stock_compare
+  - stock_data_health
 
 config_schema:
   base_api_url:
