@@ -3,7 +3,7 @@ import urllib.parse
 import urllib.request
 
 
-def _request_json(base_api_url, path, params=None, api_key=""):
+def _request_json(base_api_url, path, params=None, api_key="", method="GET", payload=None):
     base = str(base_api_url or "").strip().rstrip("/")
     if not base:
         return {
@@ -17,17 +17,23 @@ def _request_json(base_api_url, path, params=None, api_key=""):
 
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Sekar-Ardiles-Stock/1.0",
+        "User-Agent": "Sekar-Ardiles-Stock/2.0",
     }
 
     key = str(api_key or "").strip()
     if key:
         headers["x-ardiles-api-key"] = key
 
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
     request = urllib.request.Request(
         url,
         headers=headers,
-        method="GET",
+        data=data,
+        method=method,
     )
 
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -42,10 +48,17 @@ def _request_json(base_api_url, path, params=None, api_key=""):
     return json.loads(body)
 
 
-def _safe_call(base_api_url, path, params=None, api_key=""):
+def _safe_call(base_api_url, path, params=None, api_key="", method="GET", payload=None):
     try:
         return json.dumps(
-            _request_json(base_api_url, path, params=params, api_key=api_key),
+            _request_json(
+                base_api_url,
+                path,
+                params=params,
+                api_key=api_key,
+                method=method,
+                payload=payload,
+            ),
             ensure_ascii=False
         )
     except Exception as exc:
@@ -167,3 +180,37 @@ def get_stock_data_status(args, base_api_url, api_key=""):
         None,
         api_key
     )
+
+
+def _domain_call(operation, args, base_api_url, api_key=""):
+    return _safe_call(
+        base_api_url,
+        "/api/stock/domain",
+        api_key=api_key,
+        method="POST",
+        payload={"operation": operation, "args": args or {}},
+    )
+
+
+def stock_query(args, base_api_url, api_key=""):
+    return _domain_call("query", args, base_api_url, api_key)
+
+
+def stock_summary(args, base_api_url, api_key=""):
+    return _domain_call("summary", args, base_api_url, api_key)
+
+
+def stock_valuation(args, base_api_url, api_key=""):
+    return _domain_call("valuation", args, base_api_url, api_key)
+
+
+def stock_rank(args, base_api_url, api_key=""):
+    return _domain_call("rank", args, base_api_url, api_key)
+
+
+def stock_compare(args, base_api_url, api_key=""):
+    return _domain_call("compare", args, base_api_url, api_key)
+
+
+def stock_data_health(args, base_api_url, api_key=""):
+    return _domain_call("data_health", args, base_api_url, api_key)
