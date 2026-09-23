@@ -6,6 +6,12 @@ from .schemas import (
     GET_STOCK_BY_ACCSYS,
     GET_LOCATION_SUMMARY,
     GET_STOCK_DATA_STATUS,
+    STOCK_QUERY,
+    STOCK_SUMMARY,
+    STOCK_VALUATION,
+    STOCK_RANK,
+    STOCK_COMPARE,
+    STOCK_DATA_HEALTH,
 )
 
 from .tools import (
@@ -16,6 +22,12 @@ from .tools import (
     get_stock_by_accsys,
     get_location_summary,
     get_stock_data_status,
+    stock_query,
+    stock_summary,
+    stock_valuation,
+    stock_rank,
+    stock_compare,
+    stock_data_health,
 )
 
 
@@ -28,51 +40,26 @@ def register(ctx):
         cfg("api_key", ""),
     )
 
-    ctx.register_tool(
-        name="search_stock_item",
-        toolset="ardiles_stock",
-        schema=SEARCH_STOCK_ITEM,
-        handler=lambda args, **kwargs: search_stock_item(args, *common()),
-    )
+    tools = [
+        ("search_stock_item", SEARCH_STOCK_ITEM, search_stock_item),
+        ("get_model_variants", GET_MODEL_VARIANTS, get_model_variants),
+        ("get_stock_detail", GET_STOCK_DETAIL, get_stock_detail),
+        ("get_stock_by_location", GET_STOCK_BY_LOCATION, get_stock_by_location),
+        ("get_stock_by_accsys", GET_STOCK_BY_ACCSYS, get_stock_by_accsys),
+        ("get_location_summary", GET_LOCATION_SUMMARY, get_location_summary),
+        ("get_stock_data_status", GET_STOCK_DATA_STATUS, get_stock_data_status),
+        ("stock_query", STOCK_QUERY, stock_query),
+        ("stock_summary", STOCK_SUMMARY, stock_summary),
+        ("stock_valuation", STOCK_VALUATION, stock_valuation),
+        ("stock_rank", STOCK_RANK, stock_rank),
+        ("stock_compare", STOCK_COMPARE, stock_compare),
+        ("stock_data_health", STOCK_DATA_HEALTH, stock_data_health),
+    ]
 
-    ctx.register_tool(
-        name="get_model_variants",
-        toolset="ardiles_stock",
-        schema=GET_MODEL_VARIANTS,
-        handler=lambda args, **kwargs: get_model_variants(args, *common()),
-    )
-
-    ctx.register_tool(
-        name="get_stock_detail",
-        toolset="ardiles_stock",
-        schema=GET_STOCK_DETAIL,
-        handler=lambda args, **kwargs: get_stock_detail(args, *common()),
-    )
-
-    ctx.register_tool(
-        name="get_stock_by_location",
-        toolset="ardiles_stock",
-        schema=GET_STOCK_BY_LOCATION,
-        handler=lambda args, **kwargs: get_stock_by_location(args, *common()),
-    )
-
-    ctx.register_tool(
-        name="get_stock_by_accsys",
-        toolset="ardiles_stock",
-        schema=GET_STOCK_BY_ACCSYS,
-        handler=lambda args, **kwargs: get_stock_by_accsys(args, *common()),
-    )
-
-    ctx.register_tool(
-        name="get_location_summary",
-        toolset="ardiles_stock",
-        schema=GET_LOCATION_SUMMARY,
-        handler=lambda args, **kwargs: get_location_summary(args, *common()),
-    )
-
-    ctx.register_tool(
-        name="get_stock_data_status",
-        toolset="ardiles_stock",
-        schema=GET_STOCK_DATA_STATUS,
-        handler=lambda args, **kwargs: get_stock_data_status(args, *common()),
-    )
+    for name, schema, handler in tools:
+        ctx.register_tool(
+            name=name,
+            toolset="ardiles_stock",
+            schema=schema,
+            handler=lambda args, _handler=handler, **kwargs: _handler(args, *common()),
+        )
