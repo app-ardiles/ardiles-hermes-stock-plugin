@@ -1,8 +1,13 @@
 name: ardiles-stock
-version: 2.0.0
+version: 2.1.0
 manifest_version: 2
 api_version: 1
-description: Ardiles Stock Expertise tools for Sekar. Reads published stock data through the Ardiles AI Platform API.
+
+description: >
+  Ardiles Stock Expertise tools for Sekar.
+  Reads published stock history through the Ardiles AI Platform API,
+  including current stock, historical snapshots, valuation, comparison,
+  and perubahan stok between snapshots.
 
 provides_tools:
   - search_stock_item
@@ -17,19 +22,24 @@ provides_tools:
   - stock_valuation
   - stock_rank
   - stock_compare
+  - stock_changes
   - stock_data_health
 
 config_schema:
   base_api_url:
     type: str
     label: Ardiles AI Platform Base URL
-    description: Base production URL, for example https://ardiles-ai-platform.vercel.app
+    description: >
+      Base production URL,
+      for example https://ardiles-ai-platform.vercel.app
     default: ""
     required: true
 
   api_key:
     type: str
     label: Ardiles API Key
-    description: Optional x-ardiles-api-key value when API protection is enabled.
+    description: >
+      Optional x-ardiles-api-key value
+      when API protection is enabled.
     default: ""
     required: false
