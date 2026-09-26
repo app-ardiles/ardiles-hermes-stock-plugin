@@ -1,3 +1,5 @@
+import os
+
 from .schemas import (
     SEARCH_STOCK_ITEM,
     GET_MODEL_VARIANTS,
@@ -42,10 +44,35 @@ def register(ctx):
             default=default
         )
 
-    common = lambda: (
-        cfg("base_api_url", ""),
-        cfg("api_key", ""),
-    )
+    def common():
+        base_api_url = cfg(
+            "base_api_url",
+            ""
+        )
+
+        # Preferred secure source:
+        # profile-scoped .env
+        api_key = str(
+            os.environ.get(
+                "ARDILES_API_KEY",
+                ""
+            )
+        ).strip()
+
+        # Legacy fallback so the existing
+        # plugin configuration keeps working.
+        if not api_key:
+            api_key = str(
+                cfg(
+                    "api_key",
+                    ""
+                )
+            ).strip()
+
+        return (
+            base_api_url,
+            api_key,
+        )
 
     tools = [
         (
