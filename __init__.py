@@ -42,9 +42,8 @@ from .ai_query import (
 )
 
 from .skill_approval import (
-    build_pre_gateway_dispatch,
-    build_pre_llm_call,
-    build_transform_tool_result,
+    REQUEST_SKILL_APPROVAL,
+    SkillApproval,
 )
 
 
@@ -84,6 +83,10 @@ def register(ctx):
             base_api_url,
             api_key,
         )
+
+    # =====================================================
+    # Ardiles Stock tools
+    # =====================================================
 
     tools = [
         (
@@ -196,20 +199,61 @@ def register(ctx):
         )
 
     # =====================================================
-    # Ardiles secure skill-learning approval
+    # Secure Ardiles Skill Approval
     # =====================================================
 
+    skill_approval = SkillApproval(
+        ctx
+    )
+
+    # Tool called by Sekar AFTER skill_manage has passed
+    # pre-validation.
+    ctx.register_tool(
+        name="request_skill_approval",
+        toolset="ardiles_stock",
+        schema=REQUEST_SKILL_APPROVAL,
+        handler=skill_approval.request_skill_approval,
+        is_async=True,
+    )
+
+    # Intercept Telegram messages such as:
+    #   update skill
+    #   simpan skill
+    #
+    # Also protects /skills from unauthorized Telegram IDs.
     ctx.register_hook(
         "pre_gateway_dispatch",
-        build_pre_gateway_dispatch(ctx)
+        skill_approval.pre_gateway_dispatch
     )
 
+    # Inject Ardiles approval workflow instructions only
+    # for authorized Telegram users.
     ctx.register_hook(
         "pre_llm_call",
-        build_pre_llm_call(ctx)
+        skill_approval.pre_llm_call
     )
 
+    # Intercept staged skill_manage results:
+    #
+    # invalid payload
+    #   -> reject before human approval
+    #
+    # valid payload
+    #   -> expose request_skill_approval
+    #
+    # typed preapproval
+    #   -> save immediately
     ctx.register_hook(
         "transform_tool_result",
-        build_transform_tool_result(ctx)
+        skill_approval.transform_tool_result
+    )
+
+    # Native Telegram inline buttons:
+    #
+    #   [ ✅ Update Skill ] [ ❌ Batal ]
+    #
+    # This intentionally does NOT use Hermes clarify,
+    # therefore there is no "(Recommended)" label.
+    ctx.register_telegram_handler(
+        skill_approval.wire_telegram
     )
