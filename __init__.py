@@ -6,6 +6,7 @@ from .schemas import (
     GET_STOCK_BY_ACCSYS,
     GET_LOCATION_SUMMARY,
     GET_STOCK_DATA_STATUS,
+    GET_STOCK_SNAPSHOTS,
     STOCK_QUERY,
     STOCK_SUMMARY,
     STOCK_VALUATION,
@@ -23,6 +24,7 @@ from .tools import (
     get_stock_by_accsys,
     get_location_summary,
     get_stock_data_status,
+    get_stock_snapshots,
     stock_query,
     stock_summary,
     stock_valuation,
@@ -86,6 +88,12 @@ def register(ctx):
             "get_stock_data_status",
             GET_STOCK_DATA_STATUS,
             get_stock_data_status
+        ),
+
+        (
+            "get_stock_snapshots",
+            GET_STOCK_SNAPSHOTS,
+            get_stock_snapshots
         ),
 
         (
