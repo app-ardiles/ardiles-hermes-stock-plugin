@@ -1,5 +1,5 @@
 name: ardiles-stock
-version: 2.3.0
+version: 2.4.0
 manifest_version: 2
 api_version: 1
 
@@ -7,7 +7,7 @@ description: >
   Ardiles Stock Expertise AI tools.
   Reads published Ardiles stock history through the Ardiles AI Platform,
   including current stock, historical snapshots, valuation, comparison,
-  and perubahan stok between snapshots.
+  perubahan stok between snapshots, and flexible read-only analysis.
 
 provides_tools:
   - search_stock_item
@@ -25,6 +25,7 @@ provides_tools:
   - stock_compare
   - stock_changes
   - stock_data_health
+  - query_ardiles_data
 
 config_schema:
   base_api_url:
