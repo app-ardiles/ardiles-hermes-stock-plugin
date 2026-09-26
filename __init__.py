@@ -36,6 +36,11 @@ from .tools import (
     stock_data_health,
 )
 
+from .ai_query import (
+    QUERY_ARDILES_DATA,
+    query_ardiles_data,
+)
+
 
 def register(ctx):
     def cfg(name, default=""):
@@ -163,6 +168,12 @@ def register(ctx):
             "stock_data_health",
             STOCK_DATA_HEALTH,
             stock_data_health
+        ),
+
+        (
+            "query_ardiles_data",
+            QUERY_ARDILES_DATA,
+            query_ardiles_data
         ),
     ]
 
