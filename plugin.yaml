@@ -1,5 +1,5 @@
 name: ardiles-stock
-version: 2.1.0
+version: 2.2.0
 manifest_version: 2
 api_version: 1
 
@@ -17,6 +17,7 @@ provides_tools:
   - get_stock_by_accsys
   - get_location_summary
   - get_stock_data_status
+  - get_stock_snapshots
   - stock_query
   - stock_summary
   - stock_valuation
