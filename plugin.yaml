@@ -27,6 +27,7 @@ provides_tools:
   - stock_changes
   - stock_data_health
   - query_ardiles_data
+  - request_skill_approval
 
 config_schema:
   base_api_url:
