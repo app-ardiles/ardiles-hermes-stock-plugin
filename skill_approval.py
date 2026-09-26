@@ -2,16 +2,46 @@ import asyncio
 import json
 import re
 import time
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict
 
 from gateway.session_context import get_session_env
+from hermes_constants import (
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from tools import write_approval as wa
 from tools.skill_manager_tool import apply_skill_pending
+
+
+# =========================================================
+# ARDILES SECURE SKILL APPROVAL
+#
+# Authorized Telegram users only.
+#
+# Natural commands:
+#   update skill
+#   simpan skill
+#   pending skill
+#   pending skills
+#   skill pending
+#
+# Approval UI:
+#   Native Telegram buttons.
+#   DOES NOT use Hermes clarify.
+# =========================================================
 
 
 TRIGGERS = {
     "update skill",
     "simpan skill",
+}
+
+PENDING_TRIGGERS = {
+    "pending skill",
+    "pending skills",
+    "skill pending",
 }
 
 STATE_KEY = "skill_update_candidates"
@@ -24,11 +54,10 @@ CANDIDATE_TTL_SECONDS = 7 * 24 * 60 * 60
 REQUEST_SKILL_APPROVAL = {
     "name": "request_skill_approval",
     "description": (
-        "Show the authorized Telegram user native Update Skill / Batal buttons "
-        "for one validated staged skill write. "
-        "Call this only after skill_manage returns "
-        "ready_for_human_approval=true. "
-        "Do not use clarify for Ardiles skill approval."
+        "Show native Telegram Update Skill / Batal buttons for one "
+        "validated staged Ardiles skill write. Call this only after "
+        "skill_manage returns ready_for_human_approval=true. "
+        "Never use clarify for Ardiles skill approval."
     ),
     "parameters": {
         "type": "object",
@@ -36,8 +65,8 @@ REQUEST_SKILL_APPROVAL = {
             "pending_id": {
                 "type": "string",
                 "description": (
-                    "The pending_id returned by skill_manage "
-                    "after Ardiles validation succeeds."
+                    "The pending_id returned by skill_manage after "
+                    "the Ardiles pre-validation succeeds."
                 ),
             },
         },
@@ -48,16 +77,28 @@ REQUEST_SKILL_APPROVAL = {
 }
 
 
-def _normalize_text(value: Any) -> str:
+# =========================================================
+# HELPERS
+# =========================================================
+
+
+def _normalize_text(
+    value: Any
+) -> str:
     return " ".join(
-        str(value or "")
+        str(
+            value
+            or ""
+        )
         .strip()
         .lower()
         .split()
     )
 
 
-def _platform_name(value: Any) -> str:
+def _platform_name(
+    value: Any
+) -> str:
     raw = getattr(
         value,
         "value",
@@ -65,16 +106,21 @@ def _platform_name(value: Any) -> str:
     )
 
     return str(
-        raw or ""
+        raw
+        or ""
     ).strip().lower()
 
 
-def _json_result(value: Any) -> Dict[str, Any]:
+def _json_result(
+    value: Any
+) -> Dict[str, Any]:
     if isinstance(
         value,
         dict
     ):
-        return dict(value)
+        return dict(
+            value
+        )
 
     if not isinstance(
         value,
@@ -86,6 +132,7 @@ def _json_result(value: Any) -> Dict[str, Any]:
         parsed = json.loads(
             value
         )
+
     except Exception:
         return {}
 
@@ -98,6 +145,36 @@ def _json_result(value: Any) -> Dict[str, Any]:
     return {}
 
 
+def _error_text(
+    value: Any
+) -> str:
+    parsed = _json_result(
+        value
+    )
+
+    if parsed:
+        return str(
+            parsed.get(
+                "error"
+            )
+            or
+            parsed.get(
+                "message"
+            )
+            or value
+        )
+
+    return str(
+        value
+        or ""
+    )
+
+
+# =========================================================
+# MAIN CLASS
+# =========================================================
+
+
 class SkillApproval:
     def __init__(
         self,
@@ -105,37 +182,95 @@ class SkillApproval:
     ):
         self.ctx = ctx
 
+        # Capture the profile home WHILE plugin registration
+        # is running inside the correct routed profile.
+        #
+        # ctx.state.data_dir:
+        #   <PROFILE_HOME>/plugin-data/<plugin-namespace>
+        self.profile_home = Path(
+            ctx.state.data_dir
+        ).parent.parent.resolve()
+
         self.telegram_application = None
         self.telegram_loop = None
 
     # =====================================================
-    # Authorization
+    # PROFILE SCOPE
+    #
+    # Native Telegram callback handlers do not necessarily
+    # inherit the active ardiles-stock HERMES_HOME.
+    #
+    # Every pending/state operation is therefore explicitly
+    # scoped back to this plugin's profile.
+    # =====================================================
+
+    @contextmanager
+    def profile_scope(
+        self
+    ):
+        token = set_hermes_home_override(
+            str(
+                self.profile_home
+            )
+        )
+
+        try:
+            yield
+
+        finally:
+            reset_hermes_home_override(
+                token
+            )
+
+    # =====================================================
+    # AUTHORIZATION
     # =====================================================
 
     def authorized_ids(
         self
     ) -> set[str]:
-        raw = self.ctx.get_config(
-            "skill_update_telegram_ids",
-            ""
-        )
+        with self.profile_scope():
+            raw = self.ctx.get_config(
+                "skill_update_telegram_ids",
+                ""
+            )
 
         if isinstance(
             raw,
             list
         ):
             parts = raw
+
         else:
             parts = re.split(
                 r"[\s,;]+",
-                str(raw or "")
+                str(
+                    raw
+                    or ""
+                )
             )
 
         return {
-            str(item).strip()
+            str(
+                item
+            ).strip()
             for item in parts
-            if str(item).strip().isdigit()
+            if str(
+                item
+            ).strip().isdigit()
         }
+
+    def is_authorized_user_id(
+        self,
+        user_id: Any
+    ) -> bool:
+        return (
+            str(
+                user_id
+                or ""
+            ).strip()
+            in self.authorized_ids()
+        )
 
     def session_identity(
         self
@@ -263,69 +398,80 @@ class SkillApproval:
         )
 
     # =====================================================
-    # Candidate storage
+    # CANDIDATE STORAGE
     # =====================================================
 
     def load_candidates(
         self
     ) -> Dict[str, Dict[str, Any]]:
-        raw = self.ctx.state.get(
-            STATE_KEY,
-            {}
-        )
-
-        candidates = (
-            dict(raw)
-            if isinstance(
-                raw,
-                dict
-            )
-            else {}
-        )
-
-        now = time.time()
-        cleaned = {}
-
-        for pending_id, candidate in candidates.items():
-            if not isinstance(
-                candidate,
-                dict
-            ):
-                continue
-
-            created_at = float(
-                candidate.get(
-                    "created_at"
-                )
-                or 0
-            )
-
-            if (
-                created_at
-                and
-                now - created_at
-                > CANDIDATE_TTL_SECONDS
-            ):
-                continue
-
-            if (
-                wa.get_pending(
-                    wa.SKILLS,
-                    str(pending_id)
-                )
-                is None
-            ):
-                continue
-
-            cleaned[
-                str(pending_id)
-            ] = candidate
-
-        if cleaned != candidates:
-            self.ctx.state.set(
+        with self.profile_scope():
+            raw = self.ctx.state.get(
                 STATE_KEY,
-                cleaned
+                {}
             )
+
+            candidates = (
+                dict(
+                    raw
+                )
+                if isinstance(
+                    raw,
+                    dict
+                )
+                else {}
+            )
+
+            now = time.time()
+            cleaned = {}
+
+            for (
+                pending_id,
+                candidate
+            ) in candidates.items():
+
+                if not isinstance(
+                    candidate,
+                    dict
+                ):
+                    continue
+
+                created_at = float(
+                    candidate.get(
+                        "created_at"
+                    )
+                    or 0
+                )
+
+                if (
+                    created_at
+                    and
+                    now - created_at
+                    > CANDIDATE_TTL_SECONDS
+                ):
+                    continue
+
+                if (
+                    wa.get_pending(
+                        wa.SKILLS,
+                        str(
+                            pending_id
+                        )
+                    )
+                    is None
+                ):
+                    continue
+
+                cleaned[
+                    str(
+                        pending_id
+                    )
+                ] = candidate
+
+            if cleaned != candidates:
+                self.ctx.state.set(
+                    STATE_KEY,
+                    cleaned
+                )
 
         return cleaned
 
@@ -402,10 +548,11 @@ class SkillApproval:
                 time.time(),
         }
 
-        self.ctx.state.set(
-            STATE_KEY,
-            candidates
-        )
+        with self.profile_scope():
+            self.ctx.state.set(
+                STATE_KEY,
+                candidates
+            )
 
     def remove_candidate(
         self,
@@ -413,12 +560,15 @@ class SkillApproval:
     ) -> None:
         candidates = self.load_candidates()
 
-        if pending_id in candidates:
-            candidates.pop(
-                pending_id,
-                None
-            )
+        if pending_id not in candidates:
+            return
 
+        candidates.pop(
+            pending_id,
+            None
+        )
+
+        with self.profile_scope():
             self.ctx.state.set(
                 STATE_KEY,
                 candidates
@@ -430,7 +580,10 @@ class SkillApproval:
     ):
         result = []
 
-        for candidate in self.load_candidates().values():
+        for candidate in (
+            self.load_candidates()
+            .values()
+        ):
             if (
                 candidate.get(
                     "platform"
@@ -496,7 +649,7 @@ class SkillApproval:
         return result
 
     # =====================================================
-    # Natural text preapproval
+    # PREAPPROVAL
     # =====================================================
 
     def route_key(
@@ -509,14 +662,17 @@ class SkillApproval:
                     "platform",
                     ""
                 ),
+
                 identity.get(
                     "user_id",
                     ""
                 ),
+
                 identity.get(
                     "chat_id",
                     ""
                 ),
+
                 identity.get(
                     "thread_id",
                     ""
@@ -527,44 +683,54 @@ class SkillApproval:
     def load_preapprovals(
         self
     ) -> Dict[str, float]:
-        raw = self.ctx.state.get(
-            PREAPPROVAL_KEY,
-            {}
-        )
-
-        data = (
-            dict(raw)
-            if isinstance(
-                raw,
-                dict
-            )
-            else {}
-        )
-
-        now = time.time()
-        cleaned = {}
-
-        for key, value in data.items():
-            try:
-                stamped = float(
-                    value
-                )
-            except Exception:
-                continue
-
-            if (
-                now - stamped
-                <= PREAPPROVAL_TTL_SECONDS
-            ):
-                cleaned[
-                    str(key)
-                ] = stamped
-
-        if cleaned != data:
-            self.ctx.state.set(
+        with self.profile_scope():
+            raw = self.ctx.state.get(
                 PREAPPROVAL_KEY,
-                cleaned
+                {}
             )
+
+            data = (
+                dict(
+                    raw
+                )
+                if isinstance(
+                    raw,
+                    dict
+                )
+                else {}
+            )
+
+            now = time.time()
+            cleaned = {}
+
+            for (
+                key,
+                value
+            ) in data.items():
+
+                try:
+                    stamped = float(
+                        value
+                    )
+
+                except Exception:
+                    continue
+
+                if (
+                    now - stamped
+                    <= PREAPPROVAL_TTL_SECONDS
+                ):
+                    cleaned[
+                        str(
+                            key
+                        )
+                    ] = stamped
+
+            if cleaned != data:
+                self.ctx.state.set(
+                    PREAPPROVAL_KEY,
+                    cleaned
+                )
 
         return cleaned
 
@@ -580,10 +746,11 @@ class SkillApproval:
             )
         ] = time.time()
 
-        self.ctx.state.set(
-            PREAPPROVAL_KEY,
-            data
-        )
+        with self.profile_scope():
+            self.ctx.state.set(
+                PREAPPROVAL_KEY,
+                data
+            )
 
     def consume_preapproval(
         self,
@@ -607,25 +774,62 @@ class SkillApproval:
             None
         )
 
-        self.ctx.state.set(
-            PREAPPROVAL_KEY,
-            data
-        )
+        with self.profile_scope():
+            self.ctx.state.set(
+                PREAPPROVAL_KEY,
+                data
+            )
 
         return (
             time.time()
-            - float(stamped)
+            - float(
+                stamped
+            )
             <= PREAPPROVAL_TTL_SECONDS
         )
 
     # =====================================================
-    # Skill payload helpers
+    # PENDING RECORD HELPERS
     # =====================================================
 
-    def payload_skill_name(
+    def get_pending(
+        self,
+        pending_id: str
+    ):
+        with self.profile_scope():
+            return wa.get_pending(
+                wa.SKILLS,
+                pending_id
+            )
+
+    def list_pending(
+        self
+    ):
+        with self.profile_scope():
+            return wa.list_pending(
+                wa.SKILLS
+            )
+
+    def discard_pending(
+        self,
+        pending_id: str
+    ) -> bool:
+        with self.profile_scope():
+            return wa.discard_pending(
+                wa.SKILLS,
+                pending_id
+            )
+
+    # =====================================================
+    # SKILL PAYLOAD
+    # =====================================================
+
+    def payload_skill_names(
         self,
         payload: Dict[str, Any]
-    ) -> str:
+    ):
+        names = []
+
         if (
             payload.get(
                 "action"
@@ -637,8 +841,6 @@ class SkillApproval:
                 )
                 or []
             )
-
-            names = []
 
             for operation in operations:
                 if not isinstance(
@@ -663,21 +865,127 @@ class SkillApproval:
                         name
                     )
 
-            return ", ".join(
-                names
+        else:
+            name = str(
+                payload.get(
+                    "name"
+                )
+                or ""
+            ).strip()
+
+            if name:
+                names.append(
+                    name
+                )
+
+        return names
+
+    def payload_skill_name(
+        self,
+        payload: Dict[str, Any]
+    ) -> str:
+        names = self.payload_skill_names(
+            payload
+        )
+
+        return ", ".join(
+            names
+        )
+
+    def payload_operations_text(
+        self,
+        payload: Dict[str, Any]
+    ) -> str:
+        if (
+            payload.get(
+                "action"
+            ) != "batch"
+        ):
+            action = str(
+                payload.get(
+                    "action"
+                )
+                or "-"
             )
 
-        return str(
-            payload.get(
-                "name"
+            name = str(
+                payload.get(
+                    "name"
+                )
+                or "-"
             )
-            or ""
-        ).strip()
+
+            return (
+                f"{action} — {name}"
+            )
+
+        operations = (
+            payload.get(
+                "operations"
+            )
+            or []
+        )
+
+        lines = []
+
+        for (
+            index,
+            operation
+        ) in enumerate(
+            operations,
+            start=1
+        ):
+            if not isinstance(
+                operation,
+                dict
+            ):
+                continue
+
+            action = str(
+                operation.get(
+                    "action"
+                )
+                or "-"
+            )
+
+            name = str(
+                operation.get(
+                    "name"
+                )
+                or "-"
+            )
+
+            file_path = str(
+                operation.get(
+                    "file_path"
+                )
+                or ""
+            ).strip()
+
+            line = (
+                f"{index}. {action} — {name}"
+            )
+
+            if file_path:
+                line += (
+                    f" — {file_path}"
+                )
+
+            lines.append(
+                line
+            )
+
+        return (
+            "\n".join(
+                lines
+            )
+            or "-"
+        )
 
     def saved_content(
         self,
         record: Dict[str, Any],
-        max_chars: int = 2400
+        max_chars: int = 2600
     ) -> str:
         payload = (
             record.get(
@@ -693,71 +1001,174 @@ class SkillApproval:
             or ""
         )
 
+        texts = []
+
         if action == "batch":
-            text = json.dumps(
+            operations = (
                 payload.get(
                     "operations"
                 )
-                or [],
-                ensure_ascii=False,
-                indent=2
+                or []
+            )
+
+            for operation in operations:
+                if not isinstance(
+                    operation,
+                    dict
+                ):
+                    continue
+
+                op_action = str(
+                    operation.get(
+                        "action"
+                    )
+                    or ""
+                )
+
+                name = str(
+                    operation.get(
+                        "name"
+                    )
+                    or ""
+                )
+
+                if op_action in {
+                    "create",
+                    "edit"
+                }:
+                    content = str(
+                        operation.get(
+                            "content"
+                        )
+                        or ""
+                    ).strip()
+
+                    if content:
+                        texts.append(
+                            f"[{name}]\n{content}"
+                        )
+
+                elif op_action == "patch":
+                    change = (
+                        operation.get(
+                            "new_string"
+                        )
+                        or
+                        operation.get(
+                            "content"
+                        )
+                        or ""
+                    )
+
+                    if change:
+                        texts.append(
+                            f"[{name}]\n{change}"
+                        )
+
+                elif op_action == "write_file":
+                    file_content = str(
+                        operation.get(
+                            "file_content"
+                        )
+                        or ""
+                    ).strip()
+
+                    if file_content:
+                        texts.append(
+                            f"[{name} / "
+                            f"{operation.get('file_path') or 'file'}]\n"
+                            f"{file_content}"
+                        )
+
+        elif action in {
+            "create",
+            "edit"
+        }:
+            texts.append(
+                str(
+                    payload.get(
+                        "content"
+                    )
+                    or ""
+                )
             )
 
         elif action == "patch":
-            text = (
-                payload.get(
-                    "new_string"
+            texts.append(
+                str(
+                    payload.get(
+                        "new_string"
+                    )
+                    or
+                    payload.get(
+                        "content"
+                    )
+                    or ""
                 )
-                or
-                payload.get(
-                    "content"
-                )
-                or ""
             )
 
         elif action == "write_file":
-            text = (
-                payload.get(
-                    "file_content"
+            texts.append(
+                str(
+                    payload.get(
+                        "file_content"
+                    )
+                    or ""
+                )
+            )
+
+        text = "\n\n".join(
+            item.strip()
+            for item in texts
+            if str(
+                item
+            ).strip()
+        )
+
+        if not text:
+            text = str(
+                record.get(
+                    "summary"
                 )
                 or ""
             )
 
-        else:
-            text = (
-                payload.get(
-                    "content"
-                )
-                or ""
-            )
-
-        text = str(
+        if len(
             text
-        ).strip()
-
-        if len(text) > max_chars:
+        ) > max_chars:
             text = (
-                text[:max_chars]
-                .rstrip()
+                text[
+                    :max_chars
+                ].rstrip()
                 + "\n…"
             )
 
         return text
 
     # =====================================================
-    # Pre-validation BEFORE human approval
+    # PREFLIGHT VALIDATION
     # =====================================================
 
     def preflight_operation(
         self,
-        operation: Dict[str, Any]
+        operation: Dict[str, Any],
+        planned_creates=None
     ) -> str:
+        from tools.skill_manager_batch import (
+            _op_shape_error,
+        )
+
         from tools.skill_manager_tool import (
             _find_skill,
             _validate_category,
             _validate_content_size,
             _validate_frontmatter,
             _validate_name,
+        )
+
+        planned_creates = (
+            planned_creates
+            or set()
         )
 
         action = str(
@@ -773,6 +1184,16 @@ class SkillApproval:
             )
             or ""
         ).strip()
+
+        shape_error = _op_shape_error(
+            action,
+            operation
+        )
+
+        if shape_error:
+            return str(
+                shape_error
+            )
 
         if action == "create":
             error = _validate_name(
@@ -821,10 +1242,47 @@ class SkillApproval:
                     "Use patch/edit instead of create."
                 )
 
-        elif action in {
-            "edit",
-            "patch"
-        }:
+            return ""
+
+        # Operations after a create in the SAME batch
+        # are allowed even though the skill is not yet
+        # present on disk.
+        existing = _find_skill(
+            name
+        )
+
+        if (
+            not existing
+            and
+            name not in planned_creates
+        ):
+            return (
+                f"Skill '{name}' does not exist."
+            )
+
+        if action == "edit":
+            content = str(
+                operation.get(
+                    "content"
+                )
+                or ""
+            )
+
+            error = _validate_frontmatter(
+                content
+            )
+
+            if error:
+                return error
+
+            error = _validate_content_size(
+                content
+            )
+
+            if error:
+                return error
+
+        elif action == "patch":
             content = operation.get(
                 "content"
             )
@@ -854,25 +1312,64 @@ class SkillApproval:
         self,
         payload: Dict[str, Any]
     ) -> str:
-        if (
+        action = str(
             payload.get(
                 "action"
-            ) == "batch"
-        ):
-            operations = (
-                payload.get(
-                    "operations"
+            )
+            or ""
+        )
+
+        if action != "batch":
+            with self.profile_scope():
+                return self.preflight_operation(
+                    payload
                 )
-                or []
+
+        operations = (
+            payload.get(
+                "operations"
+            )
+            or []
+        )
+
+        if not isinstance(
+            operations,
+            list
+        ):
+            return (
+                "Batch operations must be a list."
             )
 
-            if not isinstance(
-                operations,
-                list
-            ):
-                return "Batch operations must be a list."
+        if not operations:
+            return (
+                "Batch operations cannot be empty."
+            )
 
-            for index, operation in enumerate(
+        planned_creates = {
+            str(
+                operation.get(
+                    "name"
+                )
+                or ""
+            ).strip()
+            for operation in operations
+            if (
+                isinstance(
+                    operation,
+                    dict
+                )
+                and
+                operation.get(
+                    "action"
+                ) == "create"
+            )
+        }
+
+        with self.profile_scope():
+            for (
+                index,
+                operation
+            ) in enumerate(
                 operations
             ):
                 if not isinstance(
@@ -885,7 +1382,8 @@ class SkillApproval:
                     )
 
                 error = self.preflight_operation(
-                    operation
+                    operation,
+                    planned_creates=planned_creates
                 )
 
                 if error:
@@ -894,22 +1392,17 @@ class SkillApproval:
                         f"{error}"
                     )
 
-            return ""
-
-        return self.preflight_operation(
-            payload
-        )
+        return ""
 
     # =====================================================
-    # Apply / cancel
+    # APPLY / REJECT
     # =====================================================
 
     def apply_pending(
         self,
         pending_id: str
     ) -> Dict[str, Any]:
-        record = wa.get_pending(
-            wa.SKILLS,
+        record = self.get_pending(
             pending_id
         )
 
@@ -934,9 +1427,26 @@ class SkillApproval:
             or {}
         )
 
-        raw_result = apply_skill_pending(
-            payload
+        validation_error = (
+            self.preflight_payload(
+                payload
+            )
         )
+
+        if validation_error:
+            return {
+                "success": False,
+                "saved": False,
+                "error":
+                    "skill_preflight_failed",
+                "message":
+                    validation_error,
+            }
+
+        with self.profile_scope():
+            raw_result = apply_skill_pending(
+                payload
+            )
 
         result = _json_result(
             raw_result
@@ -945,15 +1455,9 @@ class SkillApproval:
         if not result.get(
             "success"
         ):
-            wa.discard_pending(
-                wa.SKILLS,
-                pending_id
-            )
-
-            self.remove_candidate(
-                pending_id
-            )
-
+            # Do NOT discard it.
+            # An unexpected transient/runtime error
+            # must not destroy the pending request.
             return {
                 "success": False,
                 "saved": False,
@@ -968,11 +1472,14 @@ class SkillApproval:
                         "message"
                     )
                     or
+                    _error_text(
+                        raw_result
+                    )
+                    or
                     "Skill gagal disimpan.",
             }
 
-        wa.discard_pending(
-            wa.SKILLS,
+        self.discard_pending(
             pending_id
         )
 
@@ -983,6 +1490,9 @@ class SkillApproval:
         return {
             "success": True,
             "saved": True,
+
+            "pending_id":
+                pending_id,
 
             "skill_name":
                 self.payload_skill_name(
@@ -1006,31 +1516,27 @@ class SkillApproval:
                 "Skill berhasil disimpan.",
         }
 
-    def cancel_pending(
+    def reject_pending(
         self,
         pending_id: str
     ) -> Dict[str, Any]:
-        record = wa.get_pending(
-            wa.SKILLS,
+        record = self.get_pending(
             pending_id
         )
 
         skill_name = ""
 
         if record:
-            payload = (
-                record.get(
-                    "payload"
+            skill_name = (
+                self.payload_skill_name(
+                    record.get(
+                        "payload"
+                    )
+                    or {}
                 )
-                or {}
             )
 
-            skill_name = self.payload_skill_name(
-                payload
-            )
-
-        wa.discard_pending(
-            wa.SKILLS,
+        removed = self.discard_pending(
             pending_id
         )
 
@@ -1039,15 +1545,27 @@ class SkillApproval:
         )
 
         return {
-            "success": True,
+            "success":
+                bool(
+                    removed
+                ),
+
             "saved": False,
-            "cancelled": True,
+
+            "rejected":
+                bool(
+                    removed
+                ),
+
             "skill_name":
                 skill_name,
+
+            "pending_id":
+                pending_id,
         }
 
     # =====================================================
-    # Native Telegram buttons
+    # TELEGRAM WIRING
     # =====================================================
 
     def wire_telegram(
@@ -1057,6 +1575,8 @@ class SkillApproval:
     ):
         from telegram.ext import (
             CallbackQueryHandler,
+            MessageHandler,
+            filters,
         )
 
         self.telegram_application = application
@@ -1065,8 +1585,13 @@ class SkillApproval:
             self.telegram_loop = (
                 asyncio.get_running_loop()
             )
+
         except RuntimeError:
             self.telegram_loop = None
+
+        # ---------------------------------------------
+        # Native button callbacks
+        # ---------------------------------------------
 
         async def on_button(
             update,
@@ -1079,13 +1604,46 @@ class SkillApproval:
         application.add_handler(
             CallbackQueryHandler(
                 on_button,
-                pattern=(
-                    r"^ardiles_skill:"
-                    r"(approve|cancel):"
-                    r"[A-Za-z0-9_-]+$"
-                )
+                pattern=r"^ardiles_skill:"
             )
         )
+
+        # ---------------------------------------------
+        # Native:
+        #
+        # pending skill
+        #
+        # This bypasses the LLM entirely.
+        # ---------------------------------------------
+
+        async def on_pending_skill(
+            update,
+            context
+        ):
+            await self.handle_pending_skill_command(
+                update
+            )
+
+        application.add_handler(
+            MessageHandler(
+                filters.TEXT
+                &
+                filters.Regex(
+                    re.compile(
+                        r"^\s*"
+                        r"(?:pending\s+skills?"
+                        r"|skill\s+pending)"
+                        r"\s*$",
+                        re.IGNORECASE
+                    )
+                ),
+                on_pending_skill
+            )
+        )
+
+    # =====================================================
+    # TELEGRAM LOOP BRIDGE
+    # =====================================================
 
     async def run_on_telegram_loop(
         self,
@@ -1100,19 +1658,30 @@ class SkillApproval:
                 "Telegram gateway loop is not available."
             )
 
-        current_loop = asyncio.get_running_loop()
+        current_loop = (
+            asyncio.get_running_loop()
+        )
 
-        if current_loop is self.telegram_loop:
+        if (
+            current_loop
+            is self.telegram_loop
+        ):
             return await coroutine
 
-        future = asyncio.run_coroutine_threadsafe(
-            coroutine,
-            self.telegram_loop
+        future = (
+            asyncio.run_coroutine_threadsafe(
+                coroutine,
+                self.telegram_loop
+            )
         )
 
         return await asyncio.wrap_future(
             future
         )
+
+    # =====================================================
+    # DIRECT APPROVAL TOOL
+    # =====================================================
 
     async def request_skill_approval(
         self,
@@ -1130,6 +1699,7 @@ class SkillApproval:
             return json.dumps(
                 {
                     "success": False,
+                    "saved": False,
                     "error":
                         "pending_id_required",
                 },
@@ -1144,6 +1714,7 @@ class SkillApproval:
             return json.dumps(
                 {
                     "success": False,
+                    "saved": False,
                     "error":
                         "skill_update_not_authorized",
                     "message":
@@ -1163,12 +1734,15 @@ class SkillApproval:
             return json.dumps(
                 {
                     "success": False,
+                    "saved": False,
                     "error":
                         "skill_candidate_not_found",
                 },
                 ensure_ascii=False
             )
 
+        # Direct approval card belongs to
+        # the human/chat that generated it.
         if (
             candidate.get(
                 "user_id"
@@ -1187,14 +1761,14 @@ class SkillApproval:
             return json.dumps(
                 {
                     "success": False,
+                    "saved": False,
                     "error":
                         "skill_candidate_owner_mismatch",
                 },
                 ensure_ascii=False
             )
 
-        record = wa.get_pending(
-            wa.SKILLS,
+        record = self.get_pending(
             pending_id
         )
 
@@ -1206,6 +1780,7 @@ class SkillApproval:
             return json.dumps(
                 {
                     "success": False,
+                    "saved": False,
                     "error":
                         "pending_skill_not_found",
                 },
@@ -1222,8 +1797,9 @@ class SkillApproval:
         )
 
         if validation_error:
-            wa.discard_pending(
-                wa.SKILLS,
+            # Invalid payload never reaches
+            # human approval.
+            self.discard_pending(
                 pending_id
             )
 
@@ -1240,56 +1816,85 @@ class SkillApproval:
                     "validation_error":
                         validation_error,
                     "message": (
-                        "Perbaiki skill terlebih dahulu. "
-                        "Jangan minta approval user."
+                        "Perbaiki payload skill dahulu. "
+                        "Jangan meminta approval user."
                     ),
                 },
                 ensure_ascii=False
             )
 
-        if self.telegram_application is None:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error":
-                        "telegram_application_unavailable",
-                },
-                ensure_ascii=False
-            )
+        await self.send_direct_approval_card(
+            identity,
+            record
+        )
 
+        return json.dumps(
+            {
+                "success": True,
+                "saved": False,
+                "awaiting_human_approval": True,
+                "pending_id":
+                    pending_id,
+                "skill_name":
+                    self.payload_skill_name(
+                        record.get(
+                            "payload"
+                        )
+                        or {}
+                    ),
+                "message": (
+                    "Native Telegram buttons sent. "
+                    "Do not call clarify. "
+                    "Do not claim the skill is saved."
+                ),
+            },
+            ensure_ascii=False
+        )
+
+    async def send_direct_approval_card(
+        self,
+        identity: Dict[str, str],
+        record: Dict[str, Any]
+    ):
         from telegram import (
             InlineKeyboardButton,
             InlineKeyboardMarkup,
         )
 
+        pending_id = str(
+            record.get(
+                "id"
+            )
+            or ""
+        )
+
+        payload = (
+            record.get(
+                "payload"
+            )
+            or {}
+        )
+
         skill_name = (
-            candidate.get(
-                "skill_name"
+            self.payload_skill_name(
+                payload
             )
             or "-"
         )
 
-        content = (
-            candidate.get(
-                "content"
+        preview = (
+            self.saved_content(
+                record,
+                max_chars=1800
             )
             or
-            candidate.get(
-                "gist"
+            str(
+                record.get(
+                    "summary"
+                )
+                or "-"
             )
-            or "-"
         )
-
-        preview = str(
-            content
-        )
-
-        if len(preview) > 1800:
-            preview = (
-                preview[:1800]
-                .rstrip()
-                + "\n…"
-            )
 
         text = (
             "🧠 Learning siap disimpan\n\n"
@@ -1306,14 +1911,17 @@ class SkillApproval:
                         "✅ Update Skill",
                         callback_data=(
                             "ardiles_skill:"
-                            f"approve:{pending_id}"
+                            "direct_approve:"
+                            f"{pending_id}"
                         ),
                     ),
+
                     InlineKeyboardButton(
                         "❌ Batal",
                         callback_data=(
                             "ardiles_skill:"
-                            f"cancel:{pending_id}"
+                            "direct_cancel:"
+                            f"{pending_id}"
                         ),
                     ),
                 ]
@@ -1325,8 +1933,10 @@ class SkillApproval:
                 identity.get(
                     "chat_id"
                 ),
+
             "text":
                 text,
+
             "reply_markup":
                 keyboard,
         }
@@ -1353,23 +1963,247 @@ class SkillApproval:
             )
         )
 
-        return json.dumps(
-            {
-                "success": True,
-                "saved": False,
-                "awaiting_human_approval": True,
-                "pending_id":
-                    pending_id,
-                "skill_name":
-                    skill_name,
-                "message": (
-                    "Native Telegram approval buttons sent. "
-                    "Do not call clarify. "
-                    "Do not claim the skill is saved yet."
-                ),
-            },
-            ensure_ascii=False
+    # =====================================================
+    # PENDING SKILL MANAGEMENT
+    # =====================================================
+
+    async def handle_pending_skill_command(
+        self,
+        update
+    ):
+        user = getattr(
+            update,
+            "effective_user",
+            None
         )
+
+        message = getattr(
+            update,
+            "effective_message",
+            None
+        )
+
+        if message is None:
+            return
+
+        user_id = str(
+            getattr(
+                user,
+                "id",
+                ""
+            )
+            or ""
+        )
+
+        if not self.is_authorized_user_id(
+            user_id
+        ):
+            await message.reply_text(
+                "⛔ Anda tidak memiliki hak "
+                "untuk melihat atau menyetujui pending skill."
+            )
+            return
+
+        await self.send_pending_page(
+            message=message,
+            page=0,
+            edit=False
+        )
+
+    async def send_pending_page(
+        self,
+        *,
+        message=None,
+        query=None,
+        page: int = 0,
+        edit: bool = False
+    ):
+        from telegram import (
+            InlineKeyboardButton,
+            InlineKeyboardMarkup,
+        )
+
+        records = self.list_pending()
+
+        if not records:
+            text = (
+                "✅ Tidak ada pending skill."
+            )
+
+            if (
+                edit
+                and
+                query is not None
+            ):
+                try:
+                    await query.edit_message_text(
+                        text=text,
+                        reply_markup=None
+                    )
+
+                except Exception:
+                    if query.message:
+                        await query.message.reply_text(
+                            text
+                        )
+
+            elif message is not None:
+                await message.reply_text(
+                    text
+                )
+
+            return
+
+        total = len(
+            records
+        )
+
+        if page < 0:
+            page = total - 1
+
+        if page >= total:
+            page = 0
+
+        record = records[
+            page
+        ]
+
+        pending_id = str(
+            record.get(
+                "id"
+            )
+            or ""
+        )
+
+        payload = (
+            record.get(
+                "payload"
+            )
+            or {}
+        )
+
+        skill_name = (
+            self.payload_skill_name(
+                payload
+            )
+            or "-"
+        )
+
+        summary = str(
+            record.get(
+                "summary"
+            )
+            or "-"
+        )
+
+        operations = (
+            self.payload_operations_text(
+                payload
+            )
+        )
+
+        preview = (
+            self.saved_content(
+                record,
+                max_chars=1200
+            )
+            or "-"
+        )
+
+        text = (
+            "🧠 Pending Skill\n\n"
+            f"{page + 1} dari {total}\n\n"
+            f"ID: {pending_id}\n"
+            f"Nama skill: {skill_name}\n\n"
+            f"Ringkasan:\n{summary}\n\n"
+            f"Operasi:\n{operations}\n\n"
+            f"Isi / perubahan:\n{preview}"
+        )
+
+        rows = [
+            [
+                InlineKeyboardButton(
+                    "✅ Approve",
+                    callback_data=(
+                        "ardiles_skill:"
+                        "review_approve:"
+                        f"{pending_id}"
+                    ),
+                ),
+
+                InlineKeyboardButton(
+                    "❌ Reject",
+                    callback_data=(
+                        "ardiles_skill:"
+                        "review_reject:"
+                        f"{pending_id}"
+                    ),
+                ),
+            ]
+        ]
+
+        if total > 1:
+            previous_page = (
+                page - 1
+            ) % total
+
+            next_page = (
+                page + 1
+            ) % total
+
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Sebelumnya",
+                        callback_data=(
+                            "ardiles_skill:"
+                            "review_page:"
+                            f"{previous_page}"
+                        ),
+                    ),
+
+                    InlineKeyboardButton(
+                        "➡️ Berikutnya",
+                        callback_data=(
+                            "ardiles_skill:"
+                            "review_page:"
+                            f"{next_page}"
+                        ),
+                    ),
+                ]
+            )
+
+        keyboard = InlineKeyboardMarkup(
+            rows
+        )
+
+        if (
+            edit
+            and
+            query is not None
+        ):
+            try:
+                await query.edit_message_text(
+                    text=text,
+                    reply_markup=keyboard
+                )
+
+            except Exception:
+                if query.message:
+                    await query.message.reply_text(
+                        text=text,
+                        reply_markup=keyboard
+                    )
+
+        elif message is not None:
+            await message.reply_text(
+                text=text,
+                reply_markup=keyboard
+            )
+
+    # =====================================================
+    # BUTTON HANDLER
+    # =====================================================
 
     async def handle_telegram_button(
         self,
@@ -1394,12 +2228,14 @@ class SkillApproval:
             2
         )
 
-        if len(parts) != 3:
+        if len(
+            parts
+        ) != 3:
             return
 
         _prefix = parts[0]
         action = parts[1]
-        pending_id = parts[2]
+        value = parts[2]
 
         user = getattr(
             update,
@@ -1431,9 +2267,8 @@ class SkillApproval:
             or ""
         )
 
-        if (
+        if not self.is_authorized_user_id(
             user_id
-            not in self.authorized_ids()
         ):
             await query.answer(
                 "Anda tidak memiliki hak update skill.",
@@ -1441,74 +2276,216 @@ class SkillApproval:
             )
             return
 
-        candidate = (
-            self.load_candidates()
-            .get(
-                pending_id
-            )
-        )
+        # ---------------------------------------------
+        # REVIEW PAGINATION
+        # ---------------------------------------------
 
-        if not candidate:
-            await query.answer(
-                "Pengajuan ini sudah tidak tersedia.",
-                show_alert=True
-            )
-            return
+        if action == "review_page":
+            await query.answer()
 
-        if (
-            candidate.get(
-                "user_id"
-            ) != user_id
-            or
-            candidate.get(
-                "chat_id"
-            ) != chat_id
-        ):
-            await query.answer(
-                "Approval ini bukan milik user/chat ini.",
-                show_alert=True
-            )
-            return
+            try:
+                page = int(
+                    value
+                )
 
-        await query.answer()
+            except Exception:
+                page = 0
 
-        if action == "cancel":
-            result = self.cancel_pending(
-                pending_id
-            )
-
-            message = (
-                "❌ Update skill dibatalkan\n\n"
-                "Nama skill: "
-                f"{result.get('skill_name') or '-'}"
-            )
-
-            await self.edit_or_reply(
-                query,
-                message
+            await self.send_pending_page(
+                query=query,
+                page=page,
+                edit=True
             )
 
             return
 
-        if action != "approve":
-            return
+        pending_id = str(
+            value
+        ).strip()
 
-        result = self.apply_pending(
+        record = self.get_pending(
             pending_id
         )
 
-        if not result.get(
-            "saved"
-        ):
-            message = (
-                "⚠️ Skill belum tersimpan\n\n"
-                "Alasan:\n"
-                f"{result.get('message') or result.get('error') or 'Unknown error'}"
+        if record is None:
+            await query.answer(
+                "Pending ini sudah tidak tersedia.",
+                show_alert=True
+            )
+
+            if action.startswith(
+                "review_"
+            ):
+                await self.send_pending_page(
+                    query=query,
+                    page=0,
+                    edit=True
+                )
+
+            return
+
+        # ---------------------------------------------
+        # DIRECT CARD
+        #
+        # Must belong to same human/chat.
+        # ---------------------------------------------
+
+        if action in {
+            "direct_approve",
+            "direct_cancel"
+        }:
+            candidate = (
+                self.load_candidates()
+                .get(
+                    pending_id
+                )
+            )
+
+            if not candidate:
+                await query.answer(
+                    "Pengajuan ini sudah tidak tersedia.",
+                    show_alert=True
+                )
+                return
+
+            if (
+                candidate.get(
+                    "user_id"
+                ) != user_id
+                or
+                candidate.get(
+                    "chat_id"
+                ) != chat_id
+            ):
+                await query.answer(
+                    "Approval ini bukan milik user/chat ini.",
+                    show_alert=True
+                )
+                return
+
+        await query.answer()
+
+        # ---------------------------------------------
+        # DIRECT CANCEL
+        # ---------------------------------------------
+
+        if action == "direct_cancel":
+            result = self.reject_pending(
+                pending_id
             )
 
             await self.edit_or_reply(
                 query,
-                message
+                (
+                    "❌ Update skill dibatalkan\n\n"
+                    "Nama skill: "
+                    f"{result.get('skill_name') or '-'}"
+                )
+            )
+
+            return
+
+        # ---------------------------------------------
+        # DIRECT APPROVE
+        # ---------------------------------------------
+
+        if action == "direct_approve":
+            result = self.apply_pending(
+                pending_id
+            )
+
+            await self.show_apply_result(
+                query,
+                result,
+                show_next=False
+            )
+
+            return
+
+        # ---------------------------------------------
+        # REVIEW REJECT
+        #
+        # Boss/Andreas may reject ANY pending skill
+        # from the Ardiles profile, including legacy
+        # records that predate this plugin.
+        # ---------------------------------------------
+
+        if action == "review_reject":
+            result = self.reject_pending(
+                pending_id
+            )
+
+            remaining = self.list_pending()
+
+            text = (
+                "❌ Pending skill ditolak\n\n"
+                f"Nama skill: "
+                f"{result.get('skill_name') or '-'}\n"
+                f"ID: {pending_id}"
+            )
+
+            await self.edit_after_review(
+                query,
+                text=text,
+                has_next=bool(
+                    remaining
+                )
+            )
+
+            return
+
+        # ---------------------------------------------
+        # REVIEW APPROVE
+        #
+        # Boss/Andreas may approve legacy pending
+        # entries too.
+        # ---------------------------------------------
+
+        if action == "review_approve":
+            result = self.apply_pending(
+                pending_id
+            )
+
+            await self.show_apply_result(
+                query,
+                result,
+                show_next=True
+            )
+
+            return
+
+    # =====================================================
+    # RESULT UI
+    # =====================================================
+
+    async def show_apply_result(
+        self,
+        query,
+        result: Dict[str, Any],
+        *,
+        show_next: bool
+    ):
+        if not result.get(
+            "saved"
+        ):
+            text = (
+                "⚠️ Skill belum tersimpan\n\n"
+                "Alasan:\n"
+                f"{result.get('message') "
+                "or result.get('error') "
+                "or 'Unknown error'}"
+            )
+
+            await self.edit_after_review(
+                query,
+                text=text,
+                has_next=(
+                    show_next
+                    and
+                    bool(
+                        self.list_pending()
+                    )
+                )
             )
 
             return
@@ -1531,24 +2508,82 @@ class SkillApproval:
             or "-"
         )
 
-        if len(saved_content) > 2800:
+        if len(
+            saved_content
+        ) > 2800:
             saved_content = (
-                saved_content[:2800]
-                .rstrip()
+                saved_content[
+                    :2800
+                ].rstrip()
                 + "\n…"
             )
 
-        message = (
+        text = (
             "✅ Skill berhasil disimpan\n\n"
             f"Nama skill: {skill_name}\n\n"
             "Isi yang disimpan:\n"
             f"{saved_content}"
         )
 
-        await self.edit_or_reply(
+        await self.edit_after_review(
             query,
-            message
+            text=text,
+            has_next=(
+                show_next
+                and
+                bool(
+                    self.list_pending()
+                )
+            )
         )
+
+    async def edit_after_review(
+        self,
+        query,
+        *,
+        text: str,
+        has_next: bool
+    ):
+        from telegram import (
+            InlineKeyboardButton,
+            InlineKeyboardMarkup,
+        )
+
+        keyboard = None
+
+        if has_next:
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "➡️ Pending Berikutnya",
+                            callback_data=(
+                                "ardiles_skill:"
+                                "review_page:0"
+                            ),
+                        )
+                    ]
+                ]
+            )
+
+        try:
+            await query.edit_message_text(
+                text=text,
+                reply_markup=keyboard
+            )
+
+        except Exception:
+            message = getattr(
+                query,
+                "message",
+                None
+            )
+
+            if message is not None:
+                await message.reply_text(
+                    text=text,
+                    reply_markup=keyboard
+                )
 
     async def edit_or_reply(
         self,
@@ -1574,7 +2609,7 @@ class SkillApproval:
                 )
 
     # =====================================================
-    # Gateway text fallback
+    # NATURAL TEXT FALLBACK
     # =====================================================
 
     def pre_gateway_dispatch(
@@ -1599,8 +2634,10 @@ class SkillApproval:
             raw_text
         )
 
-        # Block native /skills commands
-        # from unauthorized Telegram users.
+        # ---------------------------------------------
+        # Protect native Hermes /skills commands.
+        # ---------------------------------------------
+
         if re.match(
             r"^/skills(?:@\w+)?(?:\s|$)",
             raw_text,
@@ -1626,6 +2663,11 @@ class SkillApproval:
 
             return None
 
+        # pending skill is intercepted by the
+        # native Telegram MessageHandler.
+        if normalized in PENDING_TRIGGERS:
+            return None
+
         if normalized not in TRIGGERS:
             return None
 
@@ -1646,7 +2688,14 @@ class SkillApproval:
             identity
         )
 
-        if len(candidates) == 1:
+        # ---------------------------------------------
+        # One staged candidate:
+        # typed "update skill" = approval.
+        # ---------------------------------------------
+
+        if len(
+            candidates
+        ) == 1:
             result = self.apply_pending(
                 candidates[0][
                     "pending_id"
@@ -1661,22 +2710,30 @@ class SkillApproval:
                         result,
                         ensure_ascii=False
                     )
-                    + "\nJika saved=true, konfirmasi "
+                    + "\nJika saved=true, WAJIB konfirmasi "
                     "nama skill dan isi yang disimpan. "
                     "Jangan panggil skill_manage lagi."
                 ),
             }
 
-        if len(candidates) > 1:
+        if len(
+            candidates
+        ) > 1:
             return {
                 "action": "rewrite",
                 "text": (
                     "Ada lebih dari satu pengajuan skill "
-                    "yang belum selesai. "
+                    "untuk percakapan ini. "
                     "Jangan menyimpan apa pun. "
-                    "Minta user menentukan skill yang dimaksud."
+                    "Minta user menggunakan 'pending skill' "
+                    "untuk memilih pengajuan."
                 ),
             }
+
+        # ---------------------------------------------
+        # No candidate yet:
+        # typed trigger pre-approves next valid write.
+        # ---------------------------------------------
 
         self.set_preapproval(
             identity
@@ -1686,20 +2743,18 @@ class SkillApproval:
             "action": "rewrite",
             "text": (
                 "[ARDILES VERIFIED SKILL PRE-APPROVAL]\n"
-                "User Telegram yang diotorisasi telah "
-                "memberi approval eksplisit dengan "
-                "trigger update skill/simpan skill. "
-                "Buat atau update learning yang relevan "
-                "dengan skill_manage. "
-                "Jika valid, policy akan langsung "
-                "menyimpannya tanpa approval kedua. "
-                "Setelah sukses WAJIB konfirmasi "
-                "nama skill dan isi yang disimpan."
+                "Telegram user yang diotorisasi telah "
+                "memberikan approval eksplisit. "
+                "Buat/update learning relevan menggunakan "
+                "skill_manage. Payload WAJIB valid sebelum "
+                "disimpan. Jangan meminta approval kedua. "
+                "Setelah sukses WAJIB konfirmasi nama skill "
+                "dan isi yang disimpan."
             ),
         }
 
     # =====================================================
-    # LLM instructions
+    # LLM POLICY
     # =====================================================
 
     def pre_llm_call(
@@ -1734,29 +2789,29 @@ class SkillApproval:
         return {
             "context": (
                 "ARDILES SKILL APPROVAL POLICY:\n"
-                "- Untuk approval skill Ardiles JANGAN gunakan clarify.\n"
+                "- JANGAN gunakan clarify untuk approval skill.\n"
                 "- Gunakan skill_manage untuk menyiapkan perubahan.\n"
-                "- Jika hasil skill_manage berisi "
-                "skill_preflight_failed, perbaiki payload skill "
-                "dan panggil skill_manage lagi SEBELUM meminta "
-                "approval manusia.\n"
-                "- Jika hasil skill_manage berisi "
+                "- Jika skill_manage menghasilkan "
+                "skill_preflight_failed, perbaiki payload dan "
+                "panggil skill_manage lagi SEBELUM approval manusia.\n"
+                "- Jika skill_manage menghasilkan "
                 "ready_for_human_approval=true, segera panggil "
                 "request_skill_approval dengan pending_id tersebut.\n"
-                "- request_skill_approval akan mengirim tombol native "
-                "Telegram: Update Skill dan Batal.\n"
-                "- Jangan mengatakan skill sudah tersimpan ketika "
+                "- request_skill_approval menampilkan tombol native "
+                "Telegram Update Skill / Batal.\n"
+                "- Jangan mengatakan sudah tersimpan selama "
                 "awaiting_human_approval=true.\n"
-                "- Jika user menulis persis 'update skill' atau "
-                "'simpan skill', itu adalah approval eksplisit.\n"
-                "- Setelah skill benar-benar berhasil disimpan, "
-                "WAJIB konfirmasi nama skill dan isi/rule/framework "
-                "yang disimpan."
+                "- 'update skill' atau 'simpan skill' dari user "
+                "authorized adalah approval eksplisit.\n"
+                "- 'pending skill' dikelola langsung oleh native "
+                "Telegram UI dan tidak membutuhkan tool call.\n"
+                "- Setelah benar-benar tersimpan, WAJIB konfirmasi "
+                "nama skill dan isi/rule/framework yang disimpan."
             )
         }
 
     # =====================================================
-    # Tool result interception
+    # SKILL_MANAGE RESULT INTERCEPTOR
     # =====================================================
 
     def transform_tool_result(
@@ -1801,12 +2856,15 @@ class SkillApproval:
                 session_id
             )
 
-        # No skill write outside authorized Telegram users.
+        # ---------------------------------------------
+        # Only Randy / Andreas Telegram IDs can
+        # create actual skill changes.
+        # ---------------------------------------------
+
         if not self.is_authorized(
             identity
         ):
-            wa.discard_pending(
-                wa.SKILLS,
+            self.discard_pending(
                 pending_id
             )
 
@@ -1826,8 +2884,7 @@ class SkillApproval:
                 ensure_ascii=False
             )
 
-        record = wa.get_pending(
-            wa.SKILLS,
+        record = self.get_pending(
             pending_id
         )
 
@@ -1842,8 +2899,14 @@ class SkillApproval:
                 ensure_ascii=False
             )
 
-        # IMPORTANT:
-        # validate BEFORE showing human approval.
+        # ---------------------------------------------
+        # PRE-VALIDATE BEFORE HUMAN APPROVAL.
+        #
+        # This prevents another:
+        # "Approve -> description too long -> Approve again"
+        # flow.
+        # ---------------------------------------------
+
         validation_error = (
             self.preflight_payload(
                 record.get(
@@ -1854,8 +2917,7 @@ class SkillApproval:
         )
 
         if validation_error:
-            wa.discard_pending(
-                wa.SKILLS,
+            self.discard_pending(
                 pending_id
             )
 
@@ -1875,8 +2937,8 @@ class SkillApproval:
                         "Payload skill belum valid. "
                         "Perbaiki sekarang dan panggil "
                         "skill_manage lagi. "
-                        "JANGAN meminta approval user "
-                        "sebelum valid."
+                        "JANGAN meminta approval manusia "
+                        "sebelum payload valid."
                     ),
                 },
                 ensure_ascii=False
@@ -1888,7 +2950,15 @@ class SkillApproval:
             record
         )
 
-        # Text trigger already approved this write.
+        # ---------------------------------------------
+        # User already typed:
+        #
+        # update skill
+        # simpan skill
+        #
+        # so do not ask twice.
+        # ---------------------------------------------
+
         if self.consume_preapproval(
             identity
         ):
