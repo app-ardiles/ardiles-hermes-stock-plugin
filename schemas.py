@@ -138,6 +138,27 @@ GET_STOCK_DATA_STATUS = {
 }
 
 
+GET_STOCK_SNAPSHOTS = {
+    "name": "get_stock_snapshots",
+    "description": (
+        "Return the authoritative list of all PUBLISHED Ardiles stock snapshot dates "
+        "currently available in the Stock History database, including earliest and "
+        "latest snapshot, published snapshot count, available dates, and batch metadata. "
+        "Use this whenever the user asks which stock dates are available, what historical "
+        "stock data exists, the earliest or latest available stock date, how many stock "
+        "snapshots are available, or whether a date exists in the dataset. "
+        "For questions about available dates, ALWAYS use this tool instead of relying on "
+        "conversation memory, prior answers, assumptions, or testing dates one by one. "
+        "The database result is the source of truth and may change as older files are "
+        "backfilled."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {}
+    }
+}
+
+
 # =========================================================
 # Flexible Stock AI tools
 # =========================================================
