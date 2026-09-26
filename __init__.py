@@ -1,4 +1,4 @@
-import os
+from agent.secret_scope import get_secret
 
 from .schemas import (
     SEARCH_STOCK_ITEM,
@@ -50,17 +50,17 @@ def register(ctx):
             ""
         )
 
-        # Preferred secure source:
-        # profile-scoped .env
+        # Secure profile-scoped secret.
+        # Required for Hermes shared/multiplex gateway.
         api_key = str(
-            os.environ.get(
+            get_secret(
                 "ARDILES_API_KEY",
                 ""
             )
+            or ""
         ).strip()
 
-        # Legacy fallback so the existing
-        # plugin configuration keeps working.
+        # Legacy migration fallback only.
         if not api_key:
             api_key = str(
                 cfg(
