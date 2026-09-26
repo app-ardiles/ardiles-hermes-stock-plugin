@@ -41,6 +41,12 @@ from .ai_query import (
     query_ardiles_data,
 )
 
+from .skill_approval import (
+    build_pre_gateway_dispatch,
+    build_pre_llm_call,
+    build_transform_tool_result,
+)
+
 
 def register(ctx):
     def cfg(name, default=""):
@@ -188,3 +194,22 @@ def register(ctx):
                     *common()
                 ),
         )
+
+    # =====================================================
+    # Ardiles secure skill-learning approval
+    # =====================================================
+
+    ctx.register_hook(
+        "pre_gateway_dispatch",
+        build_pre_gateway_dispatch(ctx)
+    )
+
+    ctx.register_hook(
+        "pre_llm_call",
+        build_pre_llm_call(ctx)
+    )
+
+    ctx.register_hook(
+        "transform_tool_result",
+        build_transform_tool_result(ctx)
+    )
