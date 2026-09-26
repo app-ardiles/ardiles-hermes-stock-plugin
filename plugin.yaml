@@ -1,5 +1,5 @@
 name: ardiles-stock
-version: 2.4.0
+version: 2.4.1
 manifest_version: 2
 api_version: 1
 
@@ -7,7 +7,8 @@ description: >
   Ardiles Stock Expertise AI tools.
   Reads published Ardiles stock history through the Ardiles AI Platform,
   including current stock, historical snapshots, valuation, comparison,
-  perubahan stok between snapshots, and flexible read-only analysis.
+  perubahan stok between snapshots, flexible read-only analysis,
+  and guarded human-approved skill learning.
 
 provides_tools:
   - search_stock_item
@@ -45,3 +46,13 @@ config_schema:
       Secret credential used by Ardiles Stock Expertise AI
       to authenticate to the Ardiles AI Platform.
     required: true
+
+  skill_update_telegram_ids:
+    type: str
+    label: Authorized Telegram IDs for Skill Update
+    description: >
+      Comma-separated numeric Telegram user IDs allowed to approve
+      shared skill updates. Keep this empty in source control and
+      configure it only on the Hermes ardiles-stock profile.
+    default: ""
+    required: false
