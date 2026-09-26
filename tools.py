@@ -287,6 +287,19 @@ def get_stock_data_status(
     )
 
 
+def get_stock_snapshots(
+    args,
+    base_api_url,
+    api_key=""
+):
+    return _safe_call(
+        base_api_url,
+        "/api/stock/snapshots",
+        None,
+        api_key
+    )
+
+
 def _domain_call(
     operation,
     args,
