@@ -1152,6 +1152,18 @@ class SkillApproval:
                 "Use for inventory KPI definitions and benchmark research.",
             "ardiles-sales-analysis":
                 "Use for Ardiles sales analysis by source and period.",
+            "ardiles-sell-through":
+                "Use when analyzing Ardiles sell-through reports.",
+            "evidence-grounded-research":
+                "Use when researching current facts or checking access.",
+            "inventory-report-analysis":
+                "Use when analyzing inventory reports, STR and stock health.",
+            "ardiles-footwear-design":
+                "Use when reviewing Ardiles footwear design and photos.",
+            "ardiles-division-str":
+                "Use when analyzing Ardiles divisional STR seasonality.",
+            "ardiles-str-monitoring":
+                "Use when monitoring Ardiles STR and stock health.",
         }
         name = operation.get("name")
         short_description = descriptions.get(name)
