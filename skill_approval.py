@@ -1133,6 +1133,69 @@ class SkillApproval:
     # PREFLIGHT VALIDATION
     # =====================================================
 
+    def prepare_create_description(self, operation: Dict[str, Any]) -> None:
+        """Adapt legacy Ardiles create drafts before validation and replay.
+
+        The full description is retained in the body. Other operations and
+        unknown skill names continue through Hermes' normal validation.
+        """
+        from tools.skill_manager_tool import (
+            SKILL_PROMPT_DESC_LIMIT,
+            _FRONTMATTER_END_RE,
+            yaml,
+        )
+
+        descriptions = {
+            "inventory-supply-chain":
+                "Use for inventory planning and supply-chain analysis.",
+            "inventory-kpi-benchmarks":
+                "Use for inventory KPI definitions and benchmark research.",
+            "ardiles-sales-analysis":
+                "Use for Ardiles sales analysis by source and period.",
+        }
+        name = operation.get("name")
+        short_description = descriptions.get(name)
+        content = operation.get("content")
+        if not short_description or not isinstance(content, str):
+            return
+
+        content = content.lstrip("\ufeff")
+        if not content.startswith("---"):
+            return
+        end_match = _FRONTMATTER_END_RE.search(content[3:])
+        if not end_match:
+            return
+        try:
+            metadata = yaml.safe_load(content[3:end_match.start() + 3])
+        except yaml.YAMLError:
+            return
+        if not isinstance(metadata, dict) or metadata.get("name") != name:
+            return
+
+        description = metadata.get("description")
+        if not isinstance(description, str):
+            return
+        if len(description.strip().strip("'\"")) <= SKILL_PROMPT_DESC_LIMIT:
+            return
+        if len(short_description) > SKILL_PROMPT_DESC_LIMIT:
+            return
+
+        body = content[end_match.end() + 3:]
+        if not body.strip():
+            return
+
+        metadata["description"] = short_description
+        operation["content"] = (
+            "---\n"
+            + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False)
+            + "---\n"
+            + body
+            + "\n\n## Original description\n\n"
+            + description
+            + "\n"
+        )
+        logger.info("Prepared short description for pending skill create: %s", name)
+
     def preflight_operation(
         self,
         operation: Dict[str, Any],
@@ -1180,6 +1243,7 @@ class SkillApproval:
             )
 
         if action == "create":
+            self.prepare_create_description(operation)
             error = _validate_name(
                 name
             )
@@ -3543,3 +3607,4 @@ class SkillApproval:
             },
             ensure_ascii=False,
         )
+
