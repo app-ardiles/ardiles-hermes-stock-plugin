@@ -1137,7 +1137,7 @@ class SkillApproval:
         """Adapt legacy Ardiles create drafts before validation and replay.
 
         The full description is retained in the body. Other operations and
-        unknown skill names continue through Hermes' normal validation.
+        malformed drafts continue through Hermes' normal validation.
         """
         from tools.skill_manager_tool import (
             SKILL_PROMPT_DESC_LIMIT,
@@ -1168,7 +1168,7 @@ class SkillApproval:
         name = operation.get("name")
         short_description = descriptions.get(name)
         content = operation.get("content")
-        if not short_description or not isinstance(content, str):
+        if not isinstance(content, str):
             return
 
         content = content.lstrip("\ufeff")
@@ -1189,6 +1189,14 @@ class SkillApproval:
             return
         if len(description.strip().strip("'\"")) <= SKILL_PROMPT_DESC_LIMIT:
             return
+        if not short_description:
+            first_sentence = re.split(r"(?<=[.!?])\s+", description.strip())[0]
+            if first_sentence.endswith(".") and len(first_sentence) <= SKILL_PROMPT_DESC_LIMIT:
+                short_description = first_sentence
+            else:
+                # Preserve the full description below; use the skill name
+                # as the compact routing cue instead of cutting a sentence.
+                short_description = "Use for " + str(name).replace("-", " ") + "."
         if len(short_description) > SKILL_PROMPT_DESC_LIMIT:
             return
 
@@ -3392,6 +3400,11 @@ class SkillApproval:
 
             "- Use skill_manage to prepare "
             "the skill write.\n"
+
+            "- Every new SKILL.md description MUST be at most 60 characters, "
+            "including spaces and punctuation: one trigger-first sentence "
+            "ending with a period. Put scope, rules and details in the body. "
+            "Check the character count BEFORE calling skill_manage.\n"
 
             "- If skill_manage returns "
             "skill_preflight_failed, fix the payload "
